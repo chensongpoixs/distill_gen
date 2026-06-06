@@ -4,7 +4,7 @@
 
 # --- llama.cpp 服务配置 ---
 llama_cpp:
-  base_url: "http://172.29.240.192:11000/v1"       # llama.cpp server 地址
+  base_url: "http://221.10.121.80:20002/v1"       # llama.cpp server 地址
   api_key: "not-needed"                      # llama.cpp 通常不需要 API key
   model: "TinySage-4B"                          # 模型名称（需与 server 端一致）
   timeout: 6000                                # 单请求超时（秒）
@@ -25,9 +25,9 @@ generation:
 
 # --- 数据路径 ---
 data:
-  input_dir: "."                              # JSON 文件所在目录（当前目录）
-  output_dir: "./gen_output"                  # JSON 输出根目录（与原始文件同名）
-  checkpoint_dir: "./gen_output/checkpoints"  # 断点续传目录
+  input_dir: "D:/Work/AI/AGIC/PolyDistill/data/ai_infra_audio_video"                              # JSON 文件所在目录（当前目录）
+  output_dir: "D:/Work/AI/AGIC/PolyDistill/data/ai_infra_audio_video/gen_output"                  # JSON 输出根目录（与原始文件同名）
+  checkpoint_dir: "D:/Work/AI/AGIC/PolyDistill/data/ai_infra_audio_video/gen_output/checkpoints"  # 断点续传目录
 
 # --- 质量约束 ---
 quality:
