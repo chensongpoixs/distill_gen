@@ -117,6 +117,9 @@ class Pipeline:
         self.writer = JsonWriter(str(self.output_dir))
         self.checkpoint = Checkpoint(self.checkpoint_dir)
 
+        # 结果缓冲区（按 source_file 分组，实时写入）
+        self._source_results: dict[str, list[GeneratedItem]] = {}
+
         # 统计
         self.stats = {
             "total": 0,
@@ -216,6 +219,11 @@ class Pipeline:
 
                     all_results.append(result)
 
+                    # 实时写入 JSON 文件（生成一条就保存一条）
+                    source = result.data_item.source_file
+                    self._source_results.setdefault(source, []).append(result)
+                    self.writer.write_json_file(source, self._source_results[source])
+
                     # 每条详细日志（含耗时 + 字数）
                     status = "✅" if result.passed else "❌"
                     self.logger.info(
@@ -247,12 +255,8 @@ class Pipeline:
         self._finalize(all_results, gen_start)
 
     def _finalize(self, all_results: list[GeneratedItem], gen_start: datetime):
-        """写入 JSON 文件和统计报告。"""
+        """写入统计报告（JSON 文件已实时写入）。"""
         gen_end = datetime.now()
-
-        # 按 source_file 分组写入 JSON
-        self.logger.info("写入 JSON 文件...")
-        self.writer.write_all(all_results)
 
         # 写入统计
         self.writer.write_stats(all_results, gen_start, gen_end)
