@@ -90,6 +90,9 @@ class LLMClient:
             try:
                 async with self._semaphore:
                     client = await self._get_client()
+                    headers = {}
+                    if self.api_key:
+                        headers["Authorization"] = f"Bearer {self.api_key}"
                     response = await client.post(
                         f"{self.base_url}/chat/completions",
                         json={
@@ -100,6 +103,7 @@ class LLMClient:
                             "top_p": top_p,
                             "seed": seed,
                         },
+                        headers=headers,
                     )
 
                     if response.status_code != 200:
