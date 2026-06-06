@@ -1,0 +1,111 @@
+# ============================================================
+# 蒸馏数据生成系统 — 配置文件
+# ============================================================
+
+# --- llama.cpp 服务配置 ---
+llama_cpp:
+  base_url: "http://172.29.240.192:11000/v1"       # llama.cpp server 地址
+  api_key: "not-needed"                      # llama.cpp 通常不需要 API key
+  model: "TinySage-4B"                          # 模型名称（需与 server 端一致）
+  timeout: 6000                                # 单请求超时（秒）
+  max_retries: 3                              # 最大重试次数
+  retry_delay: 2.0                            # 重试基础延迟（秒）
+
+# --- 生成参数 ---
+generation:
+  max_tokens: 4096                            # 单次生成最大 token 数
+  top_p: 0.9                                  # nucleus sampling
+  seed: 42                                    # 随机种子（可复现）
+
+  # 难度分层温度
+  temperature:
+    primary: 0.3       # 初级
+    intermediate: 0.5  # 中级
+    advanced: 0.7      # 高级
+
+# --- 数据路径 ---
+data:
+  input_dir: "."                              # JSON 文件所在目录（当前目录）
+  output_dir: "./gen_output"                  # JSON 输出根目录（与原始文件同名）
+  checkpoint_dir: "./gen_output/checkpoints"  # 断点续传目录
+
+# --- 质量约束 ---
+quality:
+  min_thinking_chars: 500                     # thinking 最少字符数
+  min_output_chars: 500                       # output 最少字符数
+  max_retry_per_item: 3                       # 单条数据最大重试次数
+
+# --- 并发控制 ---
+concurrency:
+  max_workers: 1                              # 最大并发请求数
+
+# --- 字段映射 ---
+fields:
+  required: ["type", "instruction"]  # 必需字段（difficulty 缺失时默认"中级"）
+
+# --- System 角色映射表 ---
+# system 字段不再由大模型生成，而是根据此配置决定。
+# 优先级: fixed_value（非空则统一使用）→ overrides[type] → default_template（填充 {type}）
+system_mapping:
+  # 设为非空字符串时，所有条目的 system 字段统一使用该值（忽略 overrides/type 映射）
+  # 留空 "" 时，按 type 从 overrides / default_template 中匹配
+  fixed_value: "You are a helpful assistant."                              # 例: "You are a helpful assistant."
+
+  default_template: "你是{type}领域的资深技术专家，精通相关核心理论、工程实践与前沿技术动态。"
+  overrides:
+    vLLM: "你是vLLM推理框架的资深系统架构师，精通PagedAttention显存管理、Continuous Batching调度策略、FlashAttention算子优化与GPU推理部署。"
+    "深度学习": "你是深度学习领域的算法研究员，精通神经网络架构设计、训练优化、模型压缩与部署，对CV/NLP/多模态等方向有深入理解。"
+    "自然语言处理": "你是NLP领域的资深算法专家，精通Transformer架构、预训练模型、RLHF对齐训练与LLM应用开发。"
+    "计算机视觉": "你是计算机视觉领域的资深工程师，精通CNN/Transformer/ViT架构、目标检测、图像分割与视频理解。"
+    "强化学习": "你是强化学习领域的算法研究员，精通PPO/TRPO/SAC等算法、RLHF对齐训练与决策智能系统设计。"
+    "推荐系统": "你是推荐系统领域的资深工程师，精通召回/排序/重排架构、特征工程与在线推理优化。"
+    "联邦学习": "你是联邦学习领域的隐私计算专家，精通FedAvg/FedProx等聚合算法、差分隐私与安全多方计算。"
+    "图神经网络": "你是图神经网络领域的研究员，精通GCN/GAT/GraphSAGE架构、消息传递机制与图表示学习。"
+    "扩散模型": "你是生成模型领域的研究员，精通DDPM/DDIM/SDE架构、Score-based生成与条件扩散模型。"
+    "知识图谱": "你是知识图谱领域的工程师，精通实体抽取、关系抽取、知识融合与图数据库技术。"
+    "语音识别": "你是语音技术领域的算法专家，精通ASR架构（CTC/RNN-T/Transformer）、声学模型与端到端语音识别。"
+    "模型压缩": "你是模型压缩与推理加速领域的专家，精通量化/剪枝/蒸馏/轻量化网络设计与端侧部署。"
+    "因果推断": "你是因果推断领域的研究员，精通do-calculus、反事实推理、结构因果模型与A/B测试设计。"
+    "自动驾驶": "你是自动驾驶领域的感知算法工程师，精通BEV感知、多传感器融合、轨迹预测与端到端自动驾驶。"
+    "AI安全": "你是AI安全领域的研究员，精通对抗攻击与防御、模型鲁棒性、后门检测与AI伦理治理。"
+    "量化": "你是模型量化领域的专家，精通INT8/INT4/FP8量化、PTQ/QAT方法与量化误差补偿技术。"
+    "多模态": "你是多模态学习领域的研究员，精通视觉-语言对齐、跨模态检索、多模态融合与生成。"
+    "对比学习": "你是自监督学习领域的研究员，精通SimCLR/MoCo/CLIP对比学习框架与表示学习理论。"
+    "生成对抗网络": "你是生成模型领域的研究员，精通GAN/VAE等生成架构、对抗训练策略与图像生成质量评估。"
+    "神经网络": "你是神经网络架构设计专家，精通CNN/RNN/Transformer/SSM等主流架构及变体设计。"
+    "元学习": "你是元学习领域的研究员，精通MAML/Reptile/Prototypical Networks等少样本学习方法。"
+    "迁移学习": "你是迁移学习领域的研究员，精通领域自适应、少样本迁移与预训练-微调范式。"
+    "三维视觉": "你是三维视觉领域的研究员，精通NeRF/3D Gaussian Splatting、点云处理与多视图重建。"
+    Agent: "你是AI Agent领域的系统架构师，精通Agent规划/记忆/工具调用、多Agent协作与LLM Agent框架设计。"
+    "图网络": "你是图网络领域的研究员，精通GCN/GAT/GraphSAGE等图神经网络架构与图表示学习。"
+    "知识蒸馏": "你是知识蒸馏领域的研究员，精通logit蒸馏/特征蒸馏/黑盒蒸馏等多教师蒸馏策略。"
+    "时序预测": "你是时序预测领域的研究员，精通ARIMA/Prophet/Transformer时序模型与金融/运维预测场景。"
+    "异常检测": "你是异常检测领域的研究员，精通孤立森林/自编码器/深度SVDD等检测方法与异常定位技术。"
+    "模型部署": "你是模型部署与推理优化专家，精通TensorRT/ONNX/vLLM部署、CUDA算子优化与Serving系统设计。"
+    "优化器": "你是深度学习训练优化专家，精通SGD/Adam/AdamW/LAMB等优化器原理与大规模分布式训练调优。"
+
+# --- System Prompt 模板 ---
+system_prompt: |
+  你是 AI Infra 领域的资深技术专家，精通：
+  - 音视频编解码（H.264/H.265/AV1、AAC/Opus）
+  - 流媒体传输（WebRTC/RTMP/HLS/QUIC）
+  - GPU/CUDA 编程与优化
+  - 深度学习推理框架（vLLM/TensorRT-LLM/llama.cpp）
+  - Transformer/SSM/CNN 架构设计
+  - 分布式训练与推理系统
+  - 视频/音频 AI 模型部署
+
+  你的回答包含两部分，必须使用 Markdown 格式：
+
+  ## 思考过程（thinking）
+  - 使用 ### 小标题划分推理阶段（问题分析、知识检索、逐步推理、结论形成）
+  - 关键技术术语使用 **粗体** 突出
+  - 对比分析使用表格或列表展示
+  - 不少于 500 字
+
+  ## 最终答案（output）
+  - 使用 ### 小标题组织内容结构（核心理论、技术细节、代码示例、延伸思考）
+  - 代码示例使用 ``` 代码块包裹并标注语言
+  - 关键技术要点使用有序/无序列表展示
+  - 重点内容使用 **粗体** 强调
+  - 不少于 500 字
