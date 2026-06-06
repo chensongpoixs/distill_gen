@@ -57,11 +57,7 @@ DIFFICULTY_SUFFIX = {
 
 
 class PromptBuilder:
-    """
-    Prompt 构建器。
-
-    要求 LLM 返回 JSON 格式，包含 reasoning_content 和 content 两个字段。
-    """
+    """Prompt 构建器。要求 LLM 回复 content 中放入 ```json 代码块。"""
 
     @staticmethod
     def build_messages(item: DataItem, system_prompt: str) -> list[dict]:
@@ -71,16 +67,14 @@ class PromptBuilder:
 【难度等级】{item.difficulty}
 【问题】{item.instruction}{diff_hint}
 
-请生成以下 JSON 格式的回答（每字段不少于 500 字，内容使用 Markdown 格式）：
+请将你的思考推理和最终答案以 JSON 格式放入 ```json 代码块中返回：
 
 ```json
 {{
-  "reasoning_content": "完整的思考推理过程（Markdown格式，使用###小标题、**粗体**、列表、表格等）",
-  "content": "完整的最终答案（Markdown格式，使用###小标题、```代码块```、**粗体**、列表等）"
+  "thinking": "完整的思考推理过程（Markdown格式，使用###小标题、**粗体**、列表、表格等， 不少于500字）",
+  "output": "完整的最终答案（Markdown格式，使用###小标题、```代码块```、**粗体**、列表等，不少于500字）"
 }}
-```
-
-只输出 JSON，不要输出其他内容。"""
+```"""
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -194,94 +188,81 @@ class Generator:
 
     def _parse_response(self, raw_text: str) -> tuple[str, str]:
         """
-        从 LLM 响应中提取 JSON，映射到 thinking / output。
+        从 LLM content 文本中提取 thinking/output。三级策略：
 
-        期望格式:
-          {"reasoning_content": "思考过程...", "content": "答案..."}
-
-        解析策略：
-        1. ```json ... ``` 代码块中的 JSON
-        2. 直接匹配 {...} JSON 对象（含 reasoning_content / content 键）
-        3. 兜底：按 Markdown 标题分割
-
-        Args:
-            raw_text: LLM 返回的完整文本
-
-        Returns:
-            tuple[str, str]: (thinking, output)
+          1. 括号栈匹配 —— 用 "thinking" 定位 JSON 对象，回溯 {，栈匹配完整 JSON。
+             不受 output 内 ```python 等嵌套 fence 影响，最鲁棒。
+          2. 贪婪正则 ```json ... ``` —— (.*) 贪婪匹配到全文最后一个 ```，确保外层闭合。
+          3. Markdown 标题分割 —— 最终兜底。
         """
         if not raw_text:
             return ("", "")
 
-        # 策略 1: 提取 ```json ... ``` 代码块
-        json_match = re.search(
-            r'```(?:json)?\s*\n?(\{.*?\})\s*\n?```',
-            raw_text, re.DOTALL
-        )
-        if json_match:
-            try:
-                data = json.loads(json_match.group(1))
-                reasoning = data.get("reasoning_content", "")
-                content = data.get("content", "")
-                if reasoning and content:
-                    return (reasoning, content)
-            except json.JSONDecodeError:
-                pass
+        # —— 策略 1: 括号栈匹配（最可靠）——
+        # 大模型输出的 JSON 通常有换行/缩进，{"thinking" 不是连续串，
+        # 所以用 "thinking" 定位，再回溯找到 {
+        key_pos = raw_text.find('"thinking"')
+        if key_pos >= 0:
+            start = raw_text.rfind('{', 0, key_pos)
+            if start >= 0:
+                json_str = self._extract_json(raw_text, start)
+                if json_str:
+                    data = self._safe_json_loads(json_str)
+                    if data:
+                        thinking = data.get("thinking", "")
+                        output = data.get("output", "")
+                        if thinking and output:
+                            return (thinking, output)
 
-        # 策略 2: 直接匹配 JSON 对象（整个响应就是 JSON）
-        json_match = re.search(
-            r'\{\s*"reasoning_content"[\s\S]*?"content"[\s\S]*?\}',
-            raw_text
-        )
-        if json_match:
-            try:
-                data = json.loads(json_match.group(0))
-                reasoning = data.get("reasoning_content", "")
-                content = data.get("content", "")
-                if reasoning and content:
-                    return (reasoning, content)
-            except json.JSONDecodeError:
-                pass
+        # —— 策略 2: 贪婪正则 ```json ... ``` ——
+        # (.*) 贪婪匹配 → 全文最后一个 ``` → 外层闭合 fence
+        # 避免 output 内的 ```python 等嵌套代码块被误匹配
+        match = re.search(r'```(?:json)?\s*\n(.*)```', raw_text, re.DOTALL)
+        if match:
+            json_str = match.group(1).strip()
+            data = self._safe_json_loads(json_str)
+            if data:
+                thinking = data.get("thinking", "")
+                output = data.get("output", "")
+                if thinking and output:
+                    return (thinking, output)
 
-        # 策略 3: 寻找任意包含 reasoning_content 和 content 的完整 JSON
-        brace_start = raw_text.find('{')
-        if brace_start >= 0:
-            # 尝试找到匹配的 }
-            depth = 0
-            in_string = False
-            escape_next = False
-            for i in range(brace_start, len(raw_text)):
-                ch = raw_text[i]
-                if escape_next:
-                    escape_next = False
-                    continue
-                if ch == '\\':
-                    escape_next = True
-                    continue
-                if ch == '"' and not escape_next:
-                    in_string = not in_string
-                    continue
-                if in_string:
-                    continue
-                if ch == '{':
-                    depth += 1
-                elif ch == '}':
-                    depth -= 1
-                    if depth == 0:
-                        json_str = raw_text[brace_start:i + 1]
-                        try:
-                            data = json.loads(json_str)
-                            reasoning = data.get("reasoning_content", "")
-                            content = data.get("content", "")
-                            if reasoning and content:
-                                return (reasoning, content)
-                        except json.JSONDecodeError:
-                            pass
-                        break
+        # —— 策略 3: Markdown 标题分割（最终兜底）——
+        return self._fallback_markdown_split(raw_text)
 
-        # 策略 4: 兜底 — Markdown 标题分割（保留原有逻辑作为后备）
-        thinking, output = self._fallback_markdown_split(raw_text)
-        return (thinking, output)
+    @staticmethod
+    def _safe_json_loads(json_str: str) -> dict | None:
+        """安全 JSON 解析，失败返回 None。"""
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            return None
+
+    def _extract_json(self, text: str, start: int) -> str | None:
+        """从 start 位置提取完整 JSON 字符串（括号栈匹配）。"""
+        depth = 0
+        in_string = False
+        escape_next = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == '\\':
+                escape_next = True
+                continue
+            if ch == '"' and not escape_next:
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch in '{[':
+                depth += 1
+            elif ch in '}]':
+                depth -= 1
+                if depth == 0:
+                    return text[start:i + 1]
+        return None
 
     def _fallback_markdown_split(self, text: str) -> tuple[str, str]:
         """兜底：按 Markdown 标题分割。"""

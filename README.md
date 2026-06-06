@@ -246,27 +246,28 @@ ls gen_output/
 
 ## 7. LLM 输出格式
 
-LLM 被要求返回严格 JSON：
+LLM 将 thinking 和 output 放入 `content` 的 ```json 代码块中：
 
+````
 ```json
 {
-  "reasoning_content": "### 问题分析\n\n从问题本身出发...\n\n### 逐步推理\n\n1. **核心原理**: ...\n\n### 结论形成\n\n综合以上分析...",
-  "content": "### 核心理论\n\n...\n\n### 技术细节\n\n...\n\n### 代码示例\n\n```python\n...\n```\n\n### 延伸思考\n\n..."
+  "thinking": "### 问题分析\n\n从问题本身出发...\n\n### 逐步推理\n\n1. **核心原理**: ...\n\n### 结论形成\n\n综合以上分析...",
+  "output": "### 核心理论\n\n...\n\n### 技术细节\n\n...\n\n### 代码示例\n\n```python\n...\n```\n\n### 延伸思考\n\n..."
 }
 ```
+````
 
-- `reasoning_content` → 映射为输出 JSON 的 `thinking` 字段
-- `content` → 映射为输出 JSON 的 `output` 字段
-- 内容均为 **Markdown 格式**（`###` 小标题、`**粗体**`、``` ` ``` 代码块、表格、列表）
+- `thinking` → 蒸馏后的思维推理链（Markdown 格式，≥500 字）
+- `output` → 蒸馏后的最终答案（Markdown 格式，≥500 字）
+- `llm_client.chat()` 只提取 `choices[0].message.content`，模型额外返回的 `reasoning_content` 字段自动丢弃
 
-解析采用 4 级兜底策略：
+解析采用 3 级简洁策略：
 
 | 优先级 | 策略 | 方法 |
 |--------|------|------|
-| 1 | ` ```json {...} ``` ` 代码块 | 正则提取 + `json.loads()` |
-| 2 | 直接 JSON `{"reasoning_content":...}` | 正则匹配 + `json.loads()` |
-| 3 | 嵌入在文本中的完整 `{...}` | 括号深度栈匹配 + `json.loads()` |
-| 4 | Markdown 标题分割 | 传统 `## 思考过程` / `## 最终答案` 分割 |
+| 1 | ` ```json {...} ``` ` 代码块 | `re.search` + `json.loads()` 直接拿 thinking/output |
+| 2 | 裸 `{"thinking":...}` JSON | 括号栈匹配 + `json.loads()` |
+| 3 | Markdown 标题分割 | `## 思考过程` / `## 最终答案` 兜底 |
 
 ---
 
@@ -281,7 +282,7 @@ LLM 被要求返回严格 JSON：
   ▼
 LLM 生成
   │
-  ├─ JSON 解析：4 级兜底策略保证内容完整
+  ├─ JSON 解析：从 content 的 ```json 代码块中提取 thinking/output
   ├─ 长度校验：thinking ≥ 500 字 AND output ≥ 500 字
   ├─ 不合格 → 自动重试（指数退避，最多 3 次）
   │
@@ -299,7 +300,7 @@ LLM 生成
 | 决策 | 理由 |
 |------|------|
 | **OpenAI-compatible 协议** | GPT-4o / Claude / Gemini / 本地模型 一个协议全部覆盖 |
-| **JSON 原生输出** | `json.loads` 无损解析，避免正则截断导致的内容丢失 |
+| **JSON 原生输出** | LLM 在 `content` 中返回 ```json 代码块，`json.loads` 无损解析，模型自带 reasoning 自动丢弃 |
 | **难度分层 Temperature** | 初级 0.3（稳定）→ 中级 0.5 → 高级 0.7（多样性） |
 | **MD5 Checksum 去重** | 基于 `type|difficulty|instruction` 内容哈希，跨文件全局唯一 |
 | **asyncio + Semaphore** | 最大化 HTTP I/O 吞吐，同时保护 API 端的并发限制 |
