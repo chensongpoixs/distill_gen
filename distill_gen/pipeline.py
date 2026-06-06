@@ -192,7 +192,9 @@ class Pipeline:
                     f"({len(batch)} 条)"
                 )
 
+                batch_start = datetime.now()
                 results = await generator.generate_batch(batch)
+                batch_elapsed = (datetime.now() - batch_start).total_seconds()
 
                 for result in results:
                     # 从配置映射表注入 system 字段
@@ -214,6 +216,17 @@ class Pipeline:
 
                     all_results.append(result)
 
+                    # 每条详细日志（含耗时 + 字数）
+                    status = "✅" if result.passed else "❌"
+                    self.logger.info(
+                        f"  {status} [{result.data_item.source_file}#{result.data_item.id}] "
+                        f"{result.data_item.type}/{result.data_item.difficulty} | "
+                        f"耗时 {result.generation_time:.1f}s | "
+                        f"system={result.system_chars}字 "
+                        f"thinking={result.thinking_chars}字 "
+                        f"output={result.output_chars}字"
+                    )
+
                 # 每批次后保存 checkpoint
                 self.checkpoint.save()
 
@@ -221,9 +234,10 @@ class Pipeline:
                 done = self.stats["skipped"] + self.stats["generated"]
                 pct = done / self.stats["total"] * 100 if self.stats["total"] > 0 else 0
                 self.logger.info(
-                    f"进度: {done}/{self.stats['total']} ({pct:.1f}%) | "
-                    f"通过: {self.stats['passed']} | "
-                    f"失败: {self.stats['failed']}"
+                    f"批次 {batch_num}/{total_batches} 完成 | "
+                    f"耗时 {batch_elapsed:.1f}s | "
+                    f"进度 {done}/{self.stats['total']} ({pct:.1f}%) | "
+                    f"通过 {self.stats['passed']} | 失败 {self.stats['failed']}"
                 )
 
         finally:

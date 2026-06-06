@@ -2,13 +2,14 @@
 核心生成引擎模块。
 
 负责:
-- Prompt 构建（难度分层，仅要求 thinking + output）
+- Prompt 构建（要求 LLM 返回 JSON 格式）
 - 调用 LLMClient 进行文本生成
-- 解析 LLM 响应（提取 thinking / output，system 由配置映射表提供）
+- 解析 LLM 响应（从 JSON 中提取 reasoning_content / content）
 - 长度校验与重试
 """
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -59,44 +60,27 @@ class PromptBuilder:
     """
     Prompt 构建器。
 
-    LLM 只负责生成 thinking + output 两部分内容。
-    system 字段由配置文件的 system_mapping 映射表提供。
+    要求 LLM 返回 JSON 格式，包含 reasoning_content 和 content 两个字段。
     """
 
     @staticmethod
     def build_messages(item: DataItem, system_prompt: str) -> list[dict]:
-        """
-        构建标准 OpenAI messages 格式，要求 LLM 生成 thinking 和 output。
-
-        Args:
-            item: 原始数据条目
-            system_prompt: 全局 system prompt（给 LLM 的角色设定）
-
-        Returns:
-            list[dict]: OpenAI messages 格式
-        """
         diff_hint = DIFFICULTY_SUFFIX.get(item.difficulty, "")
 
         user_content = f"""【技术领域】{item.type}
 【难度等级】{item.difficulty}
 【问题】{item.instruction}{diff_hint}
 
-请严格按照以下两段格式输出（每部分不少于 500 字，必须使用 Markdown 格式）：
+请生成以下 JSON 格式的回答（每字段不少于 500 字，内容使用 Markdown 格式）：
 
-## 思考过程
-[使用 Markdown 格式的完整思考推理过程，要求：
-- 使用 ### 小标题划分推理阶段（如：### 问题分析、### 知识检索、### 逐步推理、### 结论形成）
-- 关键技术术语使用 **粗体** 突出
-- 对比分析使用表格或列表展示
-- 不少于 500 字]
+```json
+{{
+  "reasoning_content": "完整的思考推理过程（Markdown格式，使用###小标题、**粗体**、列表、表格等）",
+  "content": "完整的最终答案（Markdown格式，使用###小标题、```代码块```、**粗体**、列表等）"
+}}
+```
 
-## 最终答案
-[使用 Markdown 格式的完整答案，要求：
-- 使用 ### 小标题组织内容结构（如：### 核心理论、### 技术细节、### 代码示例、### 延伸思考）
-- 代码示例使用 ``` 代码块包裹并标注语言
-- 关键技术要点使用有序/无序列表展示
-- 重点内容使用 **粗体** 强调
-- 不少于 500 字]"""
+只输出 JSON，不要输出其他内容。"""
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -108,11 +92,6 @@ class PromptBuilder:
 class Generator:
     """
     核心生成引擎。
-
-    功能:
-    - 批量并发调用 LLM 生成 thinking + output
-    - 解析 LLM 响应
-    - 长度校验 + 自动重试
     """
 
     def __init__(self, config: Config):
@@ -122,7 +101,6 @@ class Generator:
         self.client = LLMClient(config.llama_cpp, config.concurrency.max_workers)
 
     async def close(self):
-        """清理资源"""
         await self.client.close()
 
     async def generate_batch(
@@ -130,16 +108,6 @@ class Generator:
         items: list[DataItem],
         progress_callback=None,
     ) -> list[GeneratedItem]:
-        """
-        批量生成（并发执行）。
-
-        Args:
-            items: 待生成的 DataItem 列表
-            progress_callback: 每条生成完成后的回调 callback(item)
-
-        Returns:
-            list[GeneratedItem]: 生成结果列表
-        """
         tasks = [self.generate_one(item) for item in items]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -161,15 +129,6 @@ class Generator:
         return generated
 
     async def generate_one(self, item: DataItem) -> GeneratedItem:
-        """
-        生成单条数据（含自动重试）。
-
-        Args:
-            item: 原始数据条目
-
-        Returns:
-            GeneratedItem: 生成结果
-        """
         messages = PromptBuilder.build_messages(item, self.system_prompt)
         temperature = self.client.get_temperature(
             item.difficulty, self.generation_config.temperature
@@ -201,7 +160,6 @@ class Generator:
                     generation_time=elapsed,
                 )
 
-                # 长度校验
                 if self._validate(result):
                     result.passed = True
                     logger.debug(
@@ -212,7 +170,6 @@ class Generator:
                     )
                     return result
 
-                # 长度不足，记录并重试
                 logger.warning(
                     f"[{item.source_file}#{item.id}] 长度不足 "
                     f"(thinking={result.thinking_chars}字, "
@@ -228,7 +185,6 @@ class Generator:
                 )
                 best_result.error_message = str(e)
 
-        # 所有重试均失败
         if best_result.thinking_chars > 0:
             best_result.passed = (
                 best_result.thinking_chars >= self.quality_config.min_thinking_chars
@@ -238,13 +194,15 @@ class Generator:
 
     def _parse_response(self, raw_text: str) -> tuple[str, str]:
         """
-        从 LLM 响应中提取 thinking 和 output。
+        从 LLM 响应中提取 JSON，映射到 thinking / output。
 
-        解析策略（按优先级）：
-        1. Markdown 标题: "## 思考过程" + "## 最终答案"
-        2. 英文标题: "## Thinking" + "## Output/Answer"
-        3. 中文冒号标签: "思考过程：" + "最终答案："
-        4. 兜底：按段落中点分割
+        期望格式:
+          {"reasoning_content": "思考过程...", "content": "答案..."}
+
+        解析策略：
+        1. ```json ... ``` 代码块中的 JSON
+        2. 直接匹配 {...} JSON 对象（含 reasoning_content / content 键）
+        3. 兜底：按 Markdown 标题分割
 
         Args:
             raw_text: LLM 返回的完整文本
@@ -255,119 +213,120 @@ class Generator:
         if not raw_text:
             return ("", "")
 
-        # 策略 1: 中文 Markdown 标题
-        thinking, output = self._split_by_headers(raw_text, [
+        # 策略 1: 提取 ```json ... ``` 代码块
+        json_match = re.search(
+            r'```(?:json)?\s*\n?(\{.*?\})\s*\n?```',
+            raw_text, re.DOTALL
+        )
+        if json_match:
+            try:
+                data = json.loads(json_match.group(1))
+                reasoning = data.get("reasoning_content", "")
+                content = data.get("content", "")
+                if reasoning and content:
+                    return (reasoning, content)
+            except json.JSONDecodeError:
+                pass
+
+        # 策略 2: 直接匹配 JSON 对象（整个响应就是 JSON）
+        json_match = re.search(
+            r'\{\s*"reasoning_content"[\s\S]*?"content"[\s\S]*?\}',
+            raw_text
+        )
+        if json_match:
+            try:
+                data = json.loads(json_match.group(0))
+                reasoning = data.get("reasoning_content", "")
+                content = data.get("content", "")
+                if reasoning and content:
+                    return (reasoning, content)
+            except json.JSONDecodeError:
+                pass
+
+        # 策略 3: 寻找任意包含 reasoning_content 和 content 的完整 JSON
+        brace_start = raw_text.find('{')
+        if brace_start >= 0:
+            # 尝试找到匹配的 }
+            depth = 0
+            in_string = False
+            escape_next = False
+            for i in range(brace_start, len(raw_text)):
+                ch = raw_text[i]
+                if escape_next:
+                    escape_next = False
+                    continue
+                if ch == '\\':
+                    escape_next = True
+                    continue
+                if ch == '"' and not escape_next:
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        json_str = raw_text[brace_start:i + 1]
+                        try:
+                            data = json.loads(json_str)
+                            reasoning = data.get("reasoning_content", "")
+                            content = data.get("content", "")
+                            if reasoning and content:
+                                return (reasoning, content)
+                        except json.JSONDecodeError:
+                            pass
+                        break
+
+        # 策略 4: 兜底 — Markdown 标题分割（保留原有逻辑作为后备）
+        thinking, output = self._fallback_markdown_split(raw_text)
+        return (thinking, output)
+
+    def _fallback_markdown_split(self, text: str) -> tuple[str, str]:
+        """兜底：按 Markdown 标题分割。"""
+        # 尝试 ## 思考过程 / ## 最终答案
+        for tp, op in [
             (r"##\s*思考过程", r"##\s*最终答案"),
-            (r"##\s*思考过程", r"##\s*最终输出"),
-        ])
-        if thinking and output:
-            return self._clean_pair(thinking, output)
-
-        # 策略 2: 英文 Markdown 标题
-        thinking, output = self._split_by_headers(raw_text, [
             (r"##\s*[Tt]hinking", r"##\s*[Oo]utput"),
-            (r"##\s*[Tt]hinking", r"##\s*[Aa]nswer"),
-        ])
-        if thinking and output:
-            return self._clean_pair(thinking, output)
-
-        # 策略 3: 中文冒号标签
-        thinking, output = self._split_by_labels(raw_text, [
-            (r"思考过程[：:]", r"最终答案[：:]"),
-            (r"思考[：:]", r"答案[：:]"),
-        ])
-        if thinking and output:
-            return self._clean_pair(thinking, output)
-
-        # 策略 4: 兜底分割
-        thinking, output = self._fallback_split(raw_text)
-        return self._clean_pair(thinking, output)
-
-    def _split_by_headers(
-        self, text: str, header_pairs: list[tuple[str, str]]
-    ) -> tuple[str, str]:
-        """按 Markdown 标题对分割。"""
-        for thinking_pattern, output_pattern in header_pairs:
-            t_match = re.search(thinking_pattern, text)
+        ]:
+            t_match = re.search(tp, text)
             if not t_match:
                 continue
-            o_match = re.search(output_pattern, text[t_match.end():])
+            o_match = re.search(op, text[t_match.end():])
             if not o_match:
                 continue
 
             o_start = t_match.end() + o_match.start()
-            thinking_content = text[t_match.end():o_start]
-            output_content = text[o_start + len(o_match.group()):]
+            thinking = text[t_match.end():o_start].strip()
+            output = text[o_start + len(o_match.group()):].strip()
 
-            next_section = re.search(r"\n##\s+", output_content)
-            if next_section:
-                output_content = output_content[:next_section.start()]
+            # 截断后续 ## 标题之后的内容
+            next_sec = re.search(r"\n##\s+", output)
+            if next_sec:
+                output = output[:next_sec.start()]
 
-            if thinking_content.strip() and output_content.strip():
-                return (thinking_content.strip(), output_content.strip())
+            if thinking and output:
+                return (thinking, output)
 
-        return ("", "")
-
-    def _split_by_labels(
-        self, text: str, label_pairs: list[tuple[str, str]]
-    ) -> tuple[str, str]:
-        """按中文标签分割。"""
-        for thinking_pattern, output_pattern in label_pairs:
-            t_match = re.search(thinking_pattern, text)
-            if not t_match:
-                continue
-            o_match = re.search(output_pattern, text[t_match.end():])
-            if not o_match:
-                continue
-
-            o_start = t_match.end() + o_match.start()
-            thinking_content = text[t_match.end():o_start]
-            output_content = text[o_start + len(o_match.group()):]
-
-            if thinking_content.strip() and output_content.strip():
-                return (thinking_content.strip(), output_content.strip())
-
-        return ("", "")
-
-    def _fallback_split(self, text: str) -> tuple[str, str]:
-        """兜底分割：按段落中点切分。"""
-        # 尝试在 "---" 或 "###" 处分割
-        for marker in ["\n---\n", "\n### ", "\n\n\n"]:
+        # 按 --- 或段落中点分割
+        for marker in ["\n---\n", "\n\n\n"]:
             parts = text.split(marker, 1)
             if len(parts) == 2 and parts[0].strip() and parts[1].strip():
                 return (parts[0].strip(), parts[1].strip())
 
-        # 按双换行段落数中点分割
         paragraphs = re.split(r"\n\n+", text)
         if len(paragraphs) >= 2:
             mid = len(paragraphs) // 2
-            thinking = "\n\n".join(paragraphs[:mid])
-            output = "\n\n".join(paragraphs[mid:])
-            return (thinking.strip(), output.strip())
+            return (
+                "\n\n".join(paragraphs[:mid]).strip(),
+                "\n\n".join(paragraphs[mid:]).strip(),
+            )
 
-        # 按句子均分
-        sentences = re.split(r"(?<=[。！？.!?])\s*", text)
-        if len(sentences) >= 4:
-            mid = max(len(sentences) // 2, 1)
-            thinking = "".join(sentences[:mid])
-            output = "".join(sentences[mid:])
-            return (thinking.strip(), output.strip())
-
-        # 极端：字数均分
         half = len(text) // 2
         return (text[:half].strip(), text[half:].strip())
 
-    @staticmethod
-    def _clean_pair(thinking: str, output: str) -> tuple[str, str]:
-        """清理 thinking/output 文本。"""
-        thinking = re.sub(r"^[\s\n]+", "", thinking)
-        thinking = re.sub(r"^[#*\-—=]+\s*", "", thinking)
-        output = re.sub(r"^[\s\n]+", "", output)
-        output = re.sub(r"^[#*\-—=]+\s*", "", output)
-        return (thinking, output)
-
     def _validate(self, item: GeneratedItem) -> bool:
-        """质量校验：检查 thinking 和 output 长度是否达标。"""
         return (
             item.thinking_chars >= self.quality_config.min_thinking_chars
             and item.output_chars >= self.quality_config.min_output_chars

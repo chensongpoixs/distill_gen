@@ -138,6 +138,13 @@ class JsonWriter:
         avg_output = total_output / total if total > 0 else 0
         avg_time = total_time / total if total > 0 else 0
 
+        # 耗时分布（min / median / P95 / max）
+        gen_times = sorted(i.generation_time for i in all_items if i.generation_time > 0)
+        time_min = gen_times[0] if gen_times else 0
+        time_max = gen_times[-1] if gen_times else 0
+        time_median = gen_times[len(gen_times) // 2] if gen_times else 0
+        time_p95 = gen_times[int(len(gen_times) * 0.95)] if len(gen_times) >= 20 else (time_max if gen_times else 0)
+
         # 按难度统计
         by_difficulty: dict[str, dict] = {}
         for item in all_items:
@@ -194,6 +201,16 @@ class JsonWriter:
             f"| output (最终答案) | {avg_output:.0f} 字 |",
             f"| 单条平均耗时 | {avg_time:.1f}s |",
             f"| 总生成耗时 | {total_time:.0f}s ({total_time / 60:.1f}min) |",
+            "",
+            "## 耗时分布",
+            "",
+            f"| 指标 | 值 |",
+            f"|------|-----|",
+            f"| 最快 | {time_min:.1f}s |",
+            f"| 中位数 | {time_median:.1f}s |",
+            f"| P95 | {time_p95:.1f}s |",
+            f"| 最慢 | {time_max:.1f}s |",
+            f"| 平均 | {avg_time:.1f}s |",
             "",
             "## 按难度统计",
             "",
