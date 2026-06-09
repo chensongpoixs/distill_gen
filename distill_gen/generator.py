@@ -188,19 +188,17 @@ class Generator:
 
     def _parse_response(self, raw_text: str) -> tuple[str, str]:
         """
-        从 LLM content 文本中提取 thinking/output。三级策略：
+        从 LLM content 文本中提取 thinking/output。四级策略：
 
-          1. 括号栈匹配 —— 用 "thinking" 定位 JSON 对象，回溯 {，栈匹配完整 JSON。
-             不受 output 内 ```python 等嵌套 fence 影响，最鲁棒。
-          2. 贪婪正则 ```json ... ``` —— (.*) 贪婪匹配到全文最后一个 ```，确保外层闭合。
-          3. Markdown 标题分割 —— 最终兜底。
+          1. 括号栈匹配 —— 完整 JSON 对象提取，支持 repair
+          2. 贪婪正则 ```json ... ``` —— 代码块提取，支持 repair
+          3. 部分 JSON 提取 —— 响应被 max_tokens 截断时，从残缺 JSON 中尽力提取
+          4. Markdown 标题分割 —— 最终兜底（非 JSON 格式的响应）
         """
         if not raw_text:
             return ("", "")
 
         # —— 策略 1: 括号栈匹配（最可靠）——
-        # 大模型输出的 JSON 通常有换行/缩进，{"thinking" 不是连续串，
-        # 所以用 "thinking" 定位，再回溯找到 {
         key_pos = raw_text.find('"thinking"')
         if key_pos >= 0:
             start = raw_text.rfind('{', 0, key_pos)
@@ -208,6 +206,8 @@ class Generator:
                 json_str = self._extract_json(raw_text, start)
                 if json_str:
                     data = self._safe_json_loads(json_str)
+                    if not data:
+                        data = self._safe_json_loads(self._repair_json(json_str))
                     if data:
                         thinking = data.get("thinking", "")
                         output = data.get("output", "")
@@ -215,19 +215,27 @@ class Generator:
                             return (thinking, output)
 
         # —— 策略 2: 贪婪正则 ```json ... ``` ——
-        # (.*) 贪婪匹配 → 全文最后一个 ``` → 外层闭合 fence
-        # 避免 output 内的 ```python 等嵌套代码块被误匹配
         match = re.search(r'```(?:json)?\s*\n(.*)```', raw_text, re.DOTALL)
         if match:
             json_str = match.group(1).strip()
             data = self._safe_json_loads(json_str)
+            if not data:
+                data = self._safe_json_loads(self._repair_json(json_str))
             if data:
                 thinking = data.get("thinking", "")
                 output = data.get("output", "")
                 if thinking and output:
                     return (thinking, output)
 
-        # —— 策略 3: Markdown 标题分割（最终兜底）——
+        # —— 策略 3: 部分 JSON 提取（响应被截断时）——
+        # 策略 1/2 失败可能是 LLM 输出被 max_tokens 截断导致 JSON 不完整
+        # 此时尝试从残缺 JSON 中提取已有内容，好过回到 Markdown 分割
+        if key_pos >= 0:  # 存在 "thinking" 键 → 铁定是 JSON 格式响应
+            thinking, output = self._extract_partial_json(raw_text)
+            if thinking and output:
+                return (thinking, output)
+
+        # —— 策略 4: Markdown 标题分割（最终兜底）——
         return self._fallback_markdown_split(raw_text)
 
     @staticmethod
@@ -237,6 +245,123 @@ class Generator:
             return json.loads(json_str)
         except json.JSONDecodeError:
             return None
+
+    def _repair_json(self, json_str: str) -> str:
+        """
+        修复 LLM 输出 JSON 的常见格式错误：
+          1. 字符串值内未转义的 ASCII 双引号（LLM 用作中文引号 "" 的替代）
+          2. 字符串值内的原始换行/制表符（应转义为 \\n \\t）
+          3. } 或 ] 前的尾随逗号
+        """
+        result = []
+        in_string = False
+        escape_next = False
+
+        for i, ch in enumerate(json_str):
+            if escape_next:
+                escape_next = False
+                result.append(ch)
+                continue
+            if ch == '\\':
+                escape_next = True
+                result.append(ch)
+                continue
+            if ch == '"':
+                if in_string:
+                    # 在字符串内遇到引号：检查是否为 JSON 结构终止符
+                    # —— 键的终止符后跟 : ，值的终止符后跟 , 或 }
+                    rest = json_str[i + 1:].lstrip()
+                    if rest and rest[0] in ',}:':
+                        in_string = False
+                    else:
+                        # 未转义的引号（如中文引号）→ 加反斜杠转义
+                        result.append('\\')
+                else:
+                    in_string = True
+                result.append(ch)
+                continue
+            # 字符串内的原始控制字符 → 转义
+            if in_string and ch == '\n':
+                result.append('\\n')
+                continue
+            if in_string and ch == '\r':
+                result.append('\\r')
+                continue
+            if in_string and ch == '\t':
+                result.append('\\t')
+                continue
+            result.append(ch)
+
+        fixed = ''.join(result)
+        # 去除尾随逗号
+        fixed = re.sub(r',\s*}', '}', fixed)
+        fixed = re.sub(r',\s*]', ']', fixed)
+        return fixed
+
+    def _extract_partial_json(self, text: str) -> tuple[str, str]:
+        """
+        从被截断的残缺 JSON 中尽力提取 thinking/output 值。
+
+        LLM 响应可能被 max_tokens 截断，导致 JSON 不完整（缺少 } 或 ```）。
+        此方法用简单状态机直接提取字符串字段值，不要求完整 JSON 结构。
+        """
+        thinking = self._extract_json_field(text, "thinking")
+        output = self._extract_json_field(text, "output")
+        return (thinking or "", output or "")
+
+    def _extract_json_field(self, text: str, field: str) -> str | None:
+        """
+        从可能残缺的 JSON 文本中提取指定字段的字符串值。
+
+        先找 "field": "，然后用状态机读取字符串值（处理 \\ 转义），
+        遇到未转义的 " 时判断：后跟 , 或 } 即为值结束，否则当作内容内的引号。
+        如果到文本末尾都未闭合，返回已读内容（截断场景）。
+        """
+        pattern = rf'"{field}"\s*:\s*"'
+        match = re.search(pattern, text)
+        if not match:
+            return None
+
+        start = match.end()
+        result = []
+        i = start
+        while i < len(text):
+            ch = text[i]
+            if ch == '\\':
+                if i + 1 < len(text):
+                    nxt = text[i + 1]
+                    if nxt == 'n':
+                        result.append('\n')
+                    elif nxt == 't':
+                        result.append('\t')
+                    elif nxt == 'r':
+                        result.append('\r')
+                    elif nxt in ('"', '\\', '/'):
+                        result.append(nxt)
+                    else:
+                        result.append('\\' + nxt)
+                    i += 2
+                    continue
+            elif ch == '"':
+                # 字符串可能在此结束，检查后续字符
+                rest = text[i + 1:].lstrip()
+                if not rest or rest[0] in ',}:':
+                    # 值结束（正常闭合、JSON 末尾截断、下一键开始）
+                    return ''.join(result)
+                # 未转义的引号（如中文引号）→ 当作内容
+                result.append(ch)
+                i += 1
+                continue
+            elif ch in '\n\r\t':
+                # JSON 字符串内的原始控制字符 → 当作内容
+                result.append(ch)
+                i += 1
+                continue
+            result.append(ch)
+            i += 1
+
+        # 走到文本末尾而未闭合 → 截断场景，返回已读内容
+        return ''.join(result) if result else None
 
     def _extract_json(self, text: str, start: int) -> str | None:
         """从 start 位置提取完整 JSON 字符串（括号栈匹配）。"""
