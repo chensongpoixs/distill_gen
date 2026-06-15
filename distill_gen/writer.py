@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from distill_gen.dialogue_generator import DialogueGeneratedItem
 from distill_gen.generator import GeneratedItem
 
 logger = logging.getLogger(__name__)
@@ -269,6 +270,131 @@ class JsonWriter:
         stats_path = self.output_dir / "_stats.md"
         stats_path.write_text("\n".join(lines), encoding="utf-8")
         logger.info(f"统计报告已写入: {stats_path}")
+
+    # ──────────────────────────────────────────────
+    # 对话模式
+    # ──────────────────────────────────────────────
+
+    def write_dialogue_json_file(
+        self,
+        source_file: str,
+        items: list[dict],
+    ) -> Path:
+        """将一个源文件的对话 JSON 写入文件。"""
+        items_sorted = sorted(items, key=lambda r: r["id"])
+        filepath = self.output_dir / source_file
+        filepath.write_text(
+            json.dumps(items_sorted, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.info(
+            f"写入对话 JSON: {source_file} ({len(items_sorted)} 条)"
+        )
+        return filepath
+
+    def write_dialogue_stats(
+        self,
+        all_items: list[DialogueGeneratedItem],
+        gen_start_time: Optional[datetime] = None,
+        gen_end_time: Optional[datetime] = None,
+    ):
+        total = len(all_items)
+        passed = sum(1 for i in all_items if i.passed)
+        failed = total - passed
+        pass_rate = passed / total * 100 if total > 0 else 0
+
+        total_rounds = sum(i.num_rounds for i in all_items)
+        total_thinking = sum(i.total_thinking_chars for i in all_items)
+        total_output = sum(i.total_output_chars for i in all_items)
+        total_time = sum(i.generation_time for i in all_items)
+
+        avg_rounds = total_rounds / total if total > 0 else 0
+        avg_thinking = total_thinking / total if total > 0 else 0
+        avg_output = total_output / total if total > 0 else 0
+        avg_time = total_time / total if total > 0 else 0
+
+        gen_times = sorted(i.generation_time for i in all_items if i.generation_time > 0)
+        time_min = gen_times[0] if gen_times else 0
+        time_max = gen_times[-1] if gen_times else 0
+        time_median = gen_times[len(gen_times) // 2] if gen_times else 0
+        time_p95 = (
+            gen_times[int(len(gen_times) * 0.95)]
+            if len(gen_times) >= 20 else (time_max if gen_times else 0)
+        )
+
+        by_difficulty: dict[str, dict] = {}
+        for item in all_items:
+            diff = item.data_item.difficulty
+            if diff not in by_difficulty:
+                by_difficulty[diff] = {"total": 0, "passed": 0, "failed": 0, "rounds": 0}
+            by_difficulty[diff]["total"] += 1
+            by_difficulty[diff]["rounds"] += item.num_rounds
+            if item.passed:
+                by_difficulty[diff]["passed"] += 1
+            else:
+                by_difficulty[diff]["failed"] += 1
+
+        lines = [
+            "# 对话蒸馏数据生成统计报告",
+            "",
+            "## 基本信息",
+            "",
+            "| 项目 | 值 |",
+            "|------|-----|",
+            f"| 生成开始时间 | {gen_start_time.strftime('%Y-%m-%d %H:%M:%S') if gen_start_time else 'N/A'} |",
+            f"| 生成结束时间 | {gen_end_time.strftime('%Y-%m-%d %H:%M:%S') if gen_end_time else 'N/A'} |",
+            f"| 总耗时 | {self._fmt_duration(gen_start_time, gen_end_time)} |",
+            f"| 输出目录 | `{self.output_dir}` |",
+            "",
+            "## 生成概览",
+            "",
+            "| 指标 | 值 |",
+            "|------|-----|",
+            f"| 总条目数 | {total} |",
+            f"| 总轮次数 | {total_rounds} |",
+            f"| 平均轮次/条 | {avg_rounds:.1f} |",
+            f"| 通过数 | {passed} ({pass_rate:.1f}%) |",
+            f"| 失败数 | {failed} ({100 - pass_rate:.1f}%) |",
+            "",
+            "## 字数统计（平均）",
+            "",
+            "| 字段 | 平均字数 |",
+            "|------|---------|",
+            f"| thinking (思维链) | {avg_thinking:.0f} 字 |",
+            f"| output (最终答案) | {avg_output:.0f} 字 |",
+            f"| 单条平均耗时 | {avg_time:.1f}s |",
+            f"| 总生成耗时 | {total_time:.0f}s ({total_time / 60:.1f}min) |",
+            "",
+            "## 耗时分布",
+            "",
+            "| 指标 | 值 |",
+            "|------|-----|",
+            f"| 最快 | {time_min:.1f}s |",
+            f"| 中位数 | {time_median:.1f}s |",
+            f"| P95 | {time_p95:.1f}s |",
+            f"| 最慢 | {time_max:.1f}s |",
+            f"| 平均 | {avg_time:.1f}s |",
+            "",
+            "## 按难度统计",
+            "",
+            "| 难度 | 总数 | 轮次 | 通过 | 失败 | 通过率 |",
+            "|------|------|------|------|------|--------|",
+        ]
+
+        for diff in ["初级", "中级", "高级", "专家"]:
+            if diff in by_difficulty:
+                d = by_difficulty[diff]
+                rate = d["passed"] / d["total"] * 100 if d["total"] > 0 else 0
+                lines.append(
+                    f"| {diff} | {d['total']} | {d['rounds']} | {d['passed']} | "
+                    f"{d['failed']} | {rate:.1f}% |"
+                )
+
+        lines.append(f"\n---\n*报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
+
+        stats_path = self.output_dir / "_dialogue_stats.md"
+        stats_path.write_text("\n".join(lines), encoding="utf-8")
+        logger.info(f"对话统计报告已写入: {stats_path}")
 
     @staticmethod
     def _fmt_duration(

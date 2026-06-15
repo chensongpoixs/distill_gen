@@ -7,13 +7,17 @@ llama_cpp:
   base_url: "http://221.10.121.80:20002/v1"       # llama.cpp server 地址
   api_key: "not-needed"                      # llama.cpp 通常不需要 API key
   model: "gemma-4-31B-it-Q4_0"                          # 模型名称（需与 server 端一致）
-  timeout: 6000                                # 单请求超时（秒）
+  #base_url: "https://api.deepseek.com/v1"       # llama.cpp server 地址
+  #api_key: "sk-27dd1f7c555e4a3ba88b9435414fba32"                      # llama.cpp 通常不需要 API key
+  # model: "deepseek-v4-flash"                          # 模型名称（需与 server 端一致）
+  #model: "deepseek-v4-pro"                          # 模型名称（需与 server 端一致）
+  timeout: 90000                                # 单请求超时（秒）
   max_retries: 3                              # 最大重试次数
   retry_delay: 2.0                            # 重试基础延迟（秒）
 
 # --- 生成参数 ---
 generation:
-  max_tokens: 4096                            # 单次生成最大 token 数
+  max_tokens: 13932                           # 单次生成最大 token 数
   top_p: 0.9                                  # nucleus sampling
   seed: 42                                    # 随机种子（可复现）
 
@@ -25,9 +29,9 @@ generation:
 
 # --- 数据路径 ---
 data:
-  input_dir: "D:/Work/AI/AGIC/PolyDistill/data/ai_infra_audio_video"                              # JSON 文件所在目录（当前目录）
-  output_dir: "D:/Work/AI/AGIC/PolyDistill/data/ai_infra_audio_video/gen_output"                  # JSON 输出根目录（与原始文件同名）
-  checkpoint_dir: "D:/Work/AI/AGIC/PolyDistill/data/ai_infra_audio_video/gen_output/checkpoints"  # 断点续传目录
+  input_dir: "D:/Work/AI/AGIC/PolyDistill/data/ai_infra_audio_video/GPT-Claude-Gemini-DeepSeek-distill"                              # JSON 文件所在目录（当前目录）
+  output_dir: "D:/Work/AI/AGIC/PolyDistill/data/ai_infra_audio_video/GPT-Claude-Gemini-DeepSeek-distill/gen_output"                  # JSON 输出根目录（与原始文件同名）
+  checkpoint_dir: "D:/Work/AI/AGIC/PolyDistill/data/ai_infra_audio_video/GPT-Claude-Gemini-DeepSeek-distill/gen_output/checkpoints"  # 断点续传目录
 
 # --- 质量约束 ---
 quality:

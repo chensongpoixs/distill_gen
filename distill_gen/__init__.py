@@ -13,6 +13,7 @@ from distill_gen.config import Config, load_config
 from distill_gen.loader import DataItem, DataLoader
 from distill_gen.llm_client import LLMClient
 from distill_gen.generator import GeneratedItem, Generator
+from distill_gen.dialogue_generator import DialogueRound, DialogueGeneratedItem, DialogueGenerator
 from distill_gen.writer import JsonWriter
 
 __all__ = [
@@ -23,5 +24,8 @@ __all__ = [
     "LLMClient",
     "GeneratedItem",
     "Generator",
+    "DialogueRound",
+    "DialogueGeneratedItem",
+    "DialogueGenerator",
     "JsonWriter",
 ]
