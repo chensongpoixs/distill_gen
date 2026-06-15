@@ -17,7 +17,7 @@ llama_cpp:
 
 # --- 生成参数 ---
 generation:
-  max_tokens: 13932                           # 单次生成最大 token 数
+  max_tokens: 163840                           # 单次生成最大 token 数
   top_p: 0.9                                  # nucleus sampling
   seed: 42                                    # 随机种子（可复现）
 
