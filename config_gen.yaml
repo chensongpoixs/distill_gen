@@ -29,9 +29,9 @@ generation:
 
 # --- 数据路径 ---
 data:
-  input_dir: "D:/Work/AI/AGIC/PolyDistill/data/ai_infra_audio_video/GPT-Claude-Gemini-DeepSeek-distill"                              # JSON 文件所在目录（当前目录）
-  output_dir: "D:/Work/AI/AGIC/PolyDistill/data/ai_infra_audio_video/GPT-Claude-Gemini-DeepSeek-distill/gen_output"                  # JSON 输出根目录（与原始文件同名）
-  checkpoint_dir: "D:/Work/AI/AGIC/PolyDistill/data/ai_infra_audio_video/GPT-Claude-Gemini-DeepSeek-distill/gen_output/checkpoints"  # 断点续传目录
+  input_dir: "E:/Work/AI/AGIC/PolyDistill/data/ai_infra_audio_video/GPT-Claude-Gemini-DeepSeek-distill"                              # JSON 文件所在目录（当前目录）
+  output_dir: "E:/Work/AI/AGIC/PolyDistill/data/ai_infra_audio_video/GPT-Claude-Gemini-DeepSeek-distill/gen_output"                  # JSON 输出根目录（与原始文件同名）
+  checkpoint_dir: "E:/Work/AI/AGIC/PolyDistill/data/ai_infra_audio_video/GPT-Claude-Gemini-DeepSeek-distill/gen_output/checkpoints"  # 断点续传目录
 
 # --- 质量约束 ---
 quality:
@@ -41,7 +41,13 @@ quality:
 
 # --- 并发控制 ---
 concurrency:
-  max_workers: 1                              # 最大并发请求数
+  mode: "fixed"                               # 并发模式: fixed(固定并发) / rate_limit(速率限制) / token_bucket(令牌桶)
+  max_workers: 1                              # 批次处理大小（Pipeline 层并发）
+  max_concurrent_requests: 4                  # 最大并发请求数（LLM Client 层并发）
+  rate_limit_per_second: 1.0                  # 速率限制：每秒最大请求数（mode=rate_limit 时生效）
+  token_bucket_capacity: 10
+  # 令牌桶容量（mode=token_bucket 时生效）
+  token_bucket_rate: 1.0                      # 令牌桶填充速率（每秒令牌数，mode=token_bucket 时生效）
 
 # --- 字段映射 ---
 fields:
@@ -98,10 +104,3 @@ system_prompt: |
   - Transformer/SSM/CNN 架构设计
   - 分布式训练与推理系统
   - 视频/音频 AI 模型部署
-
-  你必须返回 JSON 格式的回答，不要输出其他内容：
-
-  {
-    "thinking": "思考过程（Markdown格式，使用###小标题、**粗体**、列表、表格，不少于500字）",
-    "output": "最终答案（Markdown格式，使用###小标题、```代码块```、**粗体**、列表，不少于500字）"
-  }
